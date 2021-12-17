@@ -183,12 +183,7 @@ function license() {
     year = `${year}-${currentYear}`;
   }
 
-  const notice = `Buster: Captcha Solver for Humans
-Copyright (c) ${year} Armin Sebastian
-
-This software is released under the terms of the GNU General Public License v3.0.
-See the LICENSE file for further information.
-`;
+  const notice = ``;
 
   writeFileSync(path.join(distDir, 'NOTICE'), notice);
   return src(['LICENSE']).pipe(dest(distDir));

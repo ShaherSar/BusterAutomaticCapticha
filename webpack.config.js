@@ -5,8 +5,8 @@ const LodashModuleReplacementPlugin = require('lodash-webpack-plugin');
 const VueLoaderPlugin = require('vue-loader/lib/plugin');
 const MiniCssExtractPlugin = require('mini-css-extract-plugin');
 
-const targetEnv = process.env.TARGET_ENV || 'firefox';
-const isProduction = process.env.NODE_ENV === 'production';
+const targetEnv = 'chrome';   // process.env.TARGET_ENV || 'firefox';
+const isProduction = 'false'; //process.env.NODE_ENV === 'production';
 
 let plugins = [
   new webpack.DefinePlugin({
@@ -19,7 +19,7 @@ let plugins = [
   new MiniCssExtractPlugin({
     filename: '[name]/style.css'
   }),
-  isProduction ? new LodashModuleReplacementPlugin({shorthands: true}) : null
+  isProduction ? new LodashModuleReplacementPlugin({shorthands: false}) : null
 ];
 plugins = plugins.filter(Boolean);
 

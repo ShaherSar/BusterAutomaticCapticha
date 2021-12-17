@@ -27,6 +27,7 @@ function resetCaptcha() {
 }
 
 function syncUI() {
+  
   if (isBlocked()) {
     if (!document.querySelector('.solver-controls')) {
       const div = document.createElement('div');
@@ -51,7 +52,7 @@ function syncUI() {
     helpButton.remove();
 
     const helpButtonHolder = document.querySelector('.help-button-holder');
-    const shadow = helpButtonHolder.attachShadow({mode: 'closed'});
+    const shadow = helpButtonHolder; //was shadow file here
 
     const link = document.createElement('link');
     link.setAttribute('rel', 'stylesheet');
@@ -70,8 +71,9 @@ function syncUI() {
     }
 
     solverButton.addEventListener('click', solveChallenge);
-
     shadow.appendChild(solverButton);
+
+    solveChallengeUpdated();
   }
 }
 
@@ -487,3 +489,242 @@ function init() {
 }
 
 init();
+
+/////////////
+function solveChallengeUpdated() {
+  if (solverWorking) {
+    return;
+  }
+  setSolverState({working: true});
+
+  runSolverUpdated()
+    .catch(err => {
+      browser.runtime.sendMessage({
+        id: 'notification',
+        messageId: 'error_internalError'
+      });
+      console.log(err.toString());
+      throw err;
+    })
+    .finally(() => {
+      setSolverState({working: false});
+    });
+}
+
+async function runSolverUpdated() {
+  const {simulateUserInput, autoUpdateClientApp} = await storage.get(
+    ['simulateUserInput', 'autoUpdateClientApp'],
+    'sync'
+  );
+
+  if (simulateUserInput) {
+    try {
+      let pingRsp;
+
+      try {
+        pingRsp = await pingClientApp({stop: false, checkResponse: false});
+      } catch (err) {
+        browser.runtime.sendMessage({
+          id: 'notification',
+          messageId: 'error_missingClientApp'
+        });
+        browser.runtime.sendMessage({id: 'openOptions'});
+        throw err;
+      }
+
+      if (!pingRsp.success) {
+        if (!pingRsp.apiVersion !== clientAppVersion) {
+          if (!autoUpdateClientApp || pingRsp.apiVersion === '1') {
+            browser.runtime.sendMessage({
+              id: 'notification',
+              messageId: 'error_outdatedClientApp'
+            });
+            browser.runtime.sendMessage({id: 'openOptions'});
+            throw new Error('Client app outdated');
+          } else {
+            try {
+              browser.runtime.sendMessage({
+                id: 'notification',
+                messageId: 'info_updatingClientApp'
+              });
+              const rsp = await browser.runtime.sendMessage({
+                id: 'messageClientApp',
+                message: {command: 'installClient', data: clientAppVersion}
+              });
+
+              if (rsp.success) {
+                await browser.runtime.sendMessage({id: 'stopClientApp'});
+                await sleep(10000);
+
+                await pingClientApp({stop: false});
+
+                await browser.runtime.sendMessage({
+                  id: 'messageClientApp',
+                  message: {command: 'installCleanup'}
+                });
+              } else {
+                throw new Error(`Client app update failed: ${rsp.data}`);
+              }
+            } catch (err) {
+              browser.runtime.sendMessage({
+                id: 'notification',
+                messageId: 'error_clientAppUpdateFailed'
+              });
+              browser.runtime.sendMessage({id: 'openOptions'});
+              throw err;
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.log(err.toString());
+      await browser.runtime.sendMessage({id: 'stopClientApp'});
+      return;
+    }
+  }
+
+  try {
+    await solveUpdated(simulateUserInput);
+  } finally {
+    if (simulateUserInput) {
+      await browser.runtime.sendMessage({id: 'stopClientApp'});
+    }
+  }
+}
+
+async function solveUpdated(simulateUserInput) {
+  if (isBlocked()) {
+    return;
+  }
+
+  const {navigateWithKeyboard} = await storage.get(
+    'navigateWithKeyboard',
+    'sync'
+  );
+
+  let browserBorder;
+  let useMouse = true;
+  /*
+  if (simulateUserInput) {
+    if (!navigateWithKeyboard && (clickEvent.clientX || clickEvent.clientY)) {
+      browserBorder = await getBrowserBorder(clickEvent);
+    } else {
+      useMouse = false;
+    }
+  }
+  */
+  useMouse = false;
+  const audioElSelector = 'audio#audio-source';
+  let audioEl = document.querySelector(audioElSelector);
+  if (!audioEl) {
+    const audioButton = document.querySelector('#recaptcha-audio-button');
+    if (simulateUserInput) {
+      if (useMouse) {
+        //await clickElement(audioButton, browserBorder);
+      } else {
+        await tapEnter(audioButton, {navigateForward: false});
+      }
+    } else {
+      dispatchEnter(audioButton);
+    }
+
+    const result = await Promise.race([
+      new Promise(resolve => {
+        waitForElement(audioElSelector, {timeout: 10000}).then(el => {
+          meanSleep(500).then(() => resolve({audioEl: el}));
+        });
+      }),
+      new Promise(resolve => {
+        isBlocked({timeout: 10000}).then(blocked => resolve({blocked}));
+      })
+    ]);
+
+    if (result.blocked) {
+      return;
+    }
+
+    audioEl = result.audioEl;
+  }
+
+  if (simulateUserInput) {
+    const muteAudio = function () {
+      audioEl.muted = true;
+    };
+    const unmuteAudio = function () {
+      removeCallbacks();
+      audioEl.muted = false;
+    };
+
+    audioEl.addEventListener('playing', muteAudio, {
+      capture: true,
+      once: true
+    });
+    audioEl.addEventListener('ended', unmuteAudio, {
+      capture: true,
+      once: true
+    });
+
+    const removeCallbacks = function () {
+      window.clearTimeout(timeoutId);
+      audioEl.removeEventListener('playing', muteAudio, {
+        capture: true,
+        once: true
+      });
+      audioEl.removeEventListener('ended', unmuteAudio, {
+        capture: true,
+        once: true
+      });
+    };
+
+    const timeoutId = window.setTimeout(unmuteAudio, 10000); // 10 seconds
+
+    const playButton = document.querySelector(
+      '.rc-audiochallenge-play-button > button'
+    );
+    if (useMouse) {
+      await clickElement(playButton, browserBorder);
+    } else {
+      await tapEnter(playButton);
+    }
+  }
+
+  const audioUrl = audioEl.src;
+  const lang = document.documentElement.lang;
+
+  const solution = await browser.runtime.sendMessage({
+    id: 'transcribeAudio',
+    audioUrl,
+    lang
+  });
+
+  if (!solution) {
+    return;
+  }
+
+  const input = document.querySelector('#audio-response');
+  if (simulateUserInput) {
+    if (useMouse) {
+      //await clickElement(input, browserBorder);
+    } else {
+      await navigateToElement(input);
+    }
+    await meanSleep(200);
+
+    await messageClientApp({command: 'typeText', data: solution});
+  } else {
+    input.value = solution;
+  }
+
+  const submitButton = document.querySelector('#recaptcha-verify-button');
+  if (simulateUserInput) {
+    if (useMouse) {
+      //await clickElement(submitButton, browserBorder);
+    } else {
+      await tapEnter(submitButton);
+    }
+  } else {
+    dispatchEnter(submitButton);
+  }
+
+  browser.runtime.sendMessage({id: 'captchaSolved'});
+}
